@@ -11,7 +11,7 @@ Set `live: false` while only a concept preview exists. Update `mini()` and `prev
 ## Live experiment
 
 1. Add pure calculations to `src/models.js`; keep DOM and canvas code out of that file.
-2. Add the introductory question, controls, plot behavior, and feedback to the corresponding `app.js` rendering functions (`liveHTML`, `bindLab`, `drawLab`). The prototype currently uses explicit per-ID branches. Extract a registry of experiment components as the library grows.
+2. Add the introductory question in `src/app.js`, and controls, plot behavior, and feedback to the corresponding `src/simulations.js` mounting, controls, and drawing functions. The prototype currently uses explicit per-ID branches. Extract a registry of experiment components as the library grows.
 3. Add the four explanation layers in `src/content.js`: intuition, math, practical use, and connections.
 4. State whether the display is a real calculation, projection, or schematic. Include a failure case and identify material simplifications.
 5. Check meaningful numerical behavior with `npm test`. Verify keyboard controls, narrow screens, resets, and links in a browser.

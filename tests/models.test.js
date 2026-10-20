@@ -55,3 +55,38 @@ test('classification metrics use inclusive thresholds and handle no positive pre
   assert.equal(classificationMetrics(points, .9).precision, null);
   assert.equal(classificationMetrics(points, .9).recall, 0);
 });
+
+test('changing training size preserves held-out observations for comparison', () => {
+  const small = generateDataset(7, .2, 10);
+  const large = generateDataset(7, .2, 80);
+  assert.equal(small.train.length, 10);
+  assert.equal(large.train.length, 80);
+  assert.deepEqual(small.test, large.test);
+});
+
+test('all supported degrees remain finite with the smallest training sample', () => {
+  const { train } = generateDataset(19, .5, 10);
+  for (let degree = 1; degree <= 12; degree++) {
+    for (const penalty of [0, .01, 1]) {
+      const predict = fitPolynomial(train, degree, penalty);
+      for (const x of [-1, -.5, 0, .5, 1]) assert.ok(Number.isFinite(predict(x)));
+    }
+  }
+});
+
+test('confusion counts, F1, accuracy, and cost agree with a hand-calculated case', async () => {
+  const { confusionSummary } = await import('../src/models.js');
+  const points = [{ p: .8, positive: true }, { p: .6, positive: false }, { p: .3, positive: true }, { p: .1, positive: false }];
+  const m = confusionSummary(points, .5, 2, 5);
+  assert.equal(m.tp, 1); assert.equal(m.fp, 1); assert.equal(m.fn, 1); assert.equal(m.tn, 1);
+  assert.equal(m.accuracy, .5); assert.equal(m.f1, .5); assert.equal(m.cost, 7);
+  const none = confusionSummary(points, 1);
+  assert.equal(none.precision, null); assert.equal(none.recall, 0);
+  const all = confusionSummary(points, 0);
+  assert.equal(all.recall, 1); assert.equal(all.fp, 2);
+});
+
+test('summary uses population variance and squared deviations around the mean', async () => {
+  const { summarize } = await import('../src/models.js');
+  assert.deepEqual(summarize([1, 3]), { mean: 2, median: 2, mae: 1, mse: 1, std: 1 });
+});

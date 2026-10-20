@@ -1,36 +1,132 @@
 import { concepts } from './catalog.js';
 import { detail } from './content.js';
-import { generateDataset, fitPolynomial, mean as calculateMean, median as calculateMedian, classificationMetrics } from './models.js';
+import { mountSimulation, simulationState, redraw, drawTeaser } from './simulations.js';
 
-const $=s=>document.querySelector(s);const $$=s=>[...document.querySelectorAll(s)];
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const sessions = new Map();
+let saved = [], filter = 'All', view = 'library', current = null, tab = 'Intuition';
+try {
+  const stored = JSON.parse(localStorage.getItem('intuition-saved') || '[]');
+  if (Array.isArray(stored)) saved = stored.filter(id => concepts.some(c => c.id === id));
+} catch { /* Storage is optional. */ }
 
-let saved;try{saved=JSON.parse(localStorage.getItem('intuition-saved')||'[]')}catch{saved=[]}if(!Array.isArray(saved))saved=[];let filter='All',view='library',current=null,degree=5,noise=.2,lambda=0,seed=7,threshold=.5,outlier=8,drag=false,tab='Intuition';
-function persist(){try{localStorage.setItem('intuition-saved',JSON.stringify(saved))}catch{};$('#saveCount').textContent=saved.length}persist();
+function persist() {
+  try { localStorage.setItem('intuition-saved', JSON.stringify(saved)); } catch { /* Private browsing may disable persistence. */ }
+  $('#saveCount').textContent = saved.length;
+}
+function toggleSave(id) {
+  saved = saved.includes(id) ? saved.filter(item => item !== id) : [...saved, id];
+  persist();
+}
+function renderCards() {
+  const query = $('#search').value.toLowerCase();
+  const list = concepts.filter(c => (filter === 'All' || c.category === filter) && (view !== 'saved' || saved.includes(c.id)) && `${c.title} ${c.category} ${c.desc}`.toLowerCase().includes(query));
+  $('#cards').innerHTML = list.map(c => `<article class="card"><button class="card-open" data-id="${c.id}" aria-label="Open ${c.title}"><div class="card-visual" style="background:${c.color}"><span class="card-type">${c.type}</span>${mini(c.id)}</div><div class="card-body"><span class="card-category">${c.category}</span><h3>${c.title}</h3><p>${c.desc}</p></div></button><div class="card-bottom"><span class="${c.live ? 'live' : ''}">${c.live ? '● Live experiment' : '◌ Concept preview'} · ${c.time}</span><button class="bookmark" data-save="${c.id}" aria-label="${saved.includes(c.id) ? 'Unsave' : 'Save'} ${c.title}" aria-pressed="${saved.includes(c.id)}">${saved.includes(c.id) ? '◆' : '◇'}</button></div></article>`).join('') || '<div class="empty">No experiments found. Try a different search or category.</div>';
+  $$('[data-id]').forEach(button => button.onclick = () => openLab(button.dataset.id));
+  $$('[data-save]').forEach(button => button.onclick = () => { toggleSave(button.dataset.save); renderCards(); });
+}
+function showView(next, updateHistory = true) {
+  if (current && concepts.find(c => c.id === current)?.live) sessions.set(current, simulationState());
+  view = next; current = null;
+  $('#lab').hidden = true; $('#paths').hidden = next !== 'paths'; $('#library').hidden = next === 'paths';
+  $('.hero').hidden = next === 'saved'; $('.featured').hidden = next === 'saved';
+  $('#sectionTitle').textContent = next === 'saved' ? 'Your saved experiments.' : 'A library of aha moments.';
+  $('#sectionSub').textContent = next === 'saved' ? 'Keep the ideas you want to return to.' : 'Small ideas. Powerful connections. Pick something you’re curious about.';
+  $('#breadcrumb').textContent = `Workspace / ${next === 'paths' ? 'Learning paths' : next === 'saved' ? 'Saved' : 'Explore'}`;
+  $$('.nav').forEach(button => button.classList.toggle('active', button.dataset.view === next));
+  if (next === 'paths') renderPaths(); else renderCards();
+  if (updateHistory) history.pushState(null, '', `#${next}`);
+  requestAnimationFrame(resize);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function setFilter(next) {
+  filter = next; showView('library');
+  $$('#filters button').forEach(button => button.classList.toggle('selected', button.dataset.filter === next));
+  $('#sectionTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function experimentHash(id, state) {
+  const params = new URLSearchParams();
+  if (state) params.set('state', JSON.stringify(state));
+  return `#lab/${id}${state ? '?' + params : ''}`;
+}
+function updateExperimentURL(state) {
+  sessions.set(current, state);
+  history.replaceState(null, '', experimentHash(current, state));
+  if ($('#shareURL')) $('#shareURL').value = location.href;
+}
+function openLab(id, restored, updateHistory = true) {
+  const concept = concepts.find(c => c.id === id);
+  if (!concept) return;
+  if (current && concepts.find(c => c.id === current)?.live) sessions.set(current, simulationState());
+  current = id; tab = 'Intuition';
+  $('#library').hidden = true; $('#paths').hidden = true; $('#lab').hidden = false;
+  $('#breadcrumb').textContent = `Library / ${concept.category} / ${concept.type.toLowerCase()}`;
+  $('#lab').innerHTML = `<div class="lab-top"><button class="back" id="back">← Back to the library</button><div class="lab-actions"><button class="secondary" id="share">↗ Share this experiment</button><button class="secondary" id="saveLab" aria-pressed="${saved.includes(id)}">${saved.includes(id) ? '◆ Saved' : '◇ Save experiment'}</button></div></div><div id="sharePanel" class="share-panel" hidden><label for="shareURL">This link restores your settings${id === 'overfit' ? ' and edited training points' : ''}.</label><input id="shareURL" readonly><button id="copyURL" class="secondary">Copy link</button><span id="copyStatus" role="status"></span></div><div class="lab-intro"><div class="eyebrow">${concept.category.toUpperCase()} / ${concept.type}</div><h1>${concept.title}</h1><p>${descriptions[id] || concept.desc}</p></div><div id="simulation">${concept.live ? '' : previewHTML(id)}</div><div class="details"><div class="detail-tabs" role="tablist" aria-label="Explanation layers">${['Intuition', 'The math', 'In practice', 'Connections'].map(t => `<button role="tab" tabindex="${t === tab ? 0 : -1}" aria-selected="${t === tab}" data-tab="${t}" class="${t === tab ? 'active' : ''}">${t}</button>`).join('')}</div><div class="detail-content" id="detailContent" role="tabpanel"></div></div>`;
+  if (updateHistory) history.pushState(null, '', experimentHash(id));
+  if (concept.live) {
+    mountSimulation($('#simulation'), id, restored || sessions.get(id) || {}, updateExperimentURL);
+    updateExperimentURL(simulationState());
+  }
+  $('#back').onclick = () => showView('library');
+  $('#saveLab').onclick = () => { toggleSave(id); $('#saveLab').textContent = saved.includes(id) ? '◆ Saved' : '◇ Save experiment'; $('#saveLab').setAttribute('aria-pressed', saved.includes(id)); };
+  $('#share').onclick = () => { $('#sharePanel').hidden = !$('#sharePanel').hidden; $('#shareURL').value = location.href; };
+  $('#copyURL').onclick = async () => {
+    try { await navigator.clipboard.writeText(location.href); $('#copyStatus').textContent = 'Copied! Send someone your aha moment.'; }
+    catch { $('#shareURL').select(); $('#copyStatus').textContent = 'Select and copy the link above.'; }
+  };
+  $$('[data-tab]').forEach(button => button.onclick = () => {
+    tab = button.dataset.tab;
+    $$('[data-tab]').forEach(item => { item.classList.toggle('active', item === button); item.setAttribute('aria-selected', item === button); item.tabIndex = item === button ? 0 : -1; });
+    renderDetail();
+  });
+  const tabs = $$('[data-tab]');
+  tabs.forEach((button, index) => button.onkeydown = event => {
+    const keys = { ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index + tabs.length - 1) % tabs.length, Home: 0, End: tabs.length - 1 };
+    if (event.key in keys) { event.preventDefault(); tabs[keys[event.key]].click(); tabs[keys[event.key]].focus(); }
+  });
+  renderDetail(); requestAnimationFrame(redraw);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function route() {
+  const [path, query] = location.hash.slice(1).split('?');
+  if (path.startsWith('lab/')) {
+    const id = path.slice(4);
+    if (concepts.some(c => c.id === id)) {
+      let restored;
+      try { const raw = new URLSearchParams(query).get('state'); if (raw && raw.length < 12000) restored = JSON.parse(raw); } catch { /* Fall back to default settings for invalid links. */ }
+      openLab(id, restored && typeof restored === 'object' && !Array.isArray(restored) ? restored : undefined, false);
+      return;
+    }
+  }
+  showView(['paths', 'saved'].includes(path) ? path : 'library', false);
+}
+function resize() {
+  if (!$('#library').hidden && !$('.featured').hidden) drawTeaser();
+  if (current) redraw();
+}
+$$('.nav').forEach(button => button.onclick = () => showView(button.dataset.view));
+$$('[data-filter]').forEach(button => button.onclick = () => setFilter(button.dataset.filter));
+$('#search').oninput = renderCards;
+$('.brand').onclick = event => { event.preventDefault(); setFilter('All'); };
+$('#start').onclick = $('#featuredOpen').onclick = () => openLab('overfit');
+$('#about').onclick = () => $('#info').showModal();
+$('#teaserRange').oninput = drawTeaser;
+document.addEventListener('keydown', event => {
+  if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) { event.preventDefault(); showView('library'); $('#search').focus(); }
+});
+window.addEventListener('resize', resize);
+window.addEventListener('popstate', route);
+window.addEventListener('hashchange', route);
+window.openLab = openLab;
+persist();
 function mini(id){let marks='';if(id==='overfit'){for(let i=0;i<15;i++){let x=35+i*15,y=65-27*Math.sin(i*.43)+Math.sin(i*7)*10;marks+=`<circle cx="${x}" cy="${y}" r="3" fill="#8997b9"/>`}marks+='<path d="M25 90 Q70 5 120 57 T210 75 T270 34" stroke="#6c7caa" fill="none" stroke-width="2"/>'}if(id==='outliers'){[45,62,77,91,107,123,141,158,235].forEach((x,i)=>marks+=`<circle cx="${x}" cy="70" r="${i===8?7:5}" fill="${i===8?'#cf9a61':'#bdb5a0'}"/>`);marks+='<path d="M118 41v59" stroke="#b68146" stroke-dasharray="3 3"/><path d="M25 85H273" stroke="#e0d7c7"/>'}if(id==='threshold'){for(let i=0;i<25;i++)marks+=`<circle cx="${30+i*10}" cy="${50+Math.sin(i*13)*20}" r="4" fill="${i<12?'#9eb89a':'#d5ae89'}" opacity=".8"/>`;marks+='<path d="M150 30v72" stroke="#64855c" stroke-width="2"/>'}if(id==='vectors'){for(let i=0;i<30;i++)marks+=`<circle cx="${70+Math.sin(i*5)*30+(i%2)*125}" cy="${65+Math.cos(i*7)*26}" r="3" fill="${i%2?'#7da9b7':'#b4bdc1'}"/>`;marks+='<path d="M90 85l93-30" stroke="#71a4b4" stroke-dasharray="4 4"/>'}if(id==='attention'){for(let i=0;i<5;i++){for(let j=0;j<5;j++)marks+=`<path d="M${50+i*50} 35L${50+j*50} 88" stroke="#a79bbf" opacity="${i===j?.7:.12}"/>`;marks+=`<rect x="${36+i*50}" y="25" width="28" height="15" rx="4" fill="#b5a9ca"/><rect x="${36+i*50}" y="87" width="28" height="15" rx="4" fill="#d6d0e2"/>`}}if(id==='rag'){marks='<path d="M50 65H250" stroke="#b3c19e" stroke-dasharray="4 4"/>';[40,110,180,250].forEach((x,i)=>marks+=`<rect x="${x-16}" y="47" width="32" height="36" rx="5" fill="${i===3?'#77905e':'#dde6cf'}" stroke="#c4d2b4"/><text x="${x}" y="70" text-anchor="middle" fill="${i===3?'white':'#82936d'}" font-size="15">${['?','▤','⌕','✓'][i]}</text>`)}return `<svg viewBox="0 0 300 125" aria-hidden="true">${marks}</svg>`}
-function renderCards(){const q=$('#search').value.toLowerCase();const list=concepts.filter(c=>(filter==='All'||c.category===filter)&&(view!=='saved'||saved.includes(c.id))&&(c.title+' '+c.category+' '+c.desc).toLowerCase().includes(q));$('#cards').innerHTML=list.map(c=>`<article class="card" tabindex="0" role="button" aria-label="Open ${c.title}" data-id="${c.id}"><div class="card-visual" style="background:${c.color}"><span class="card-type">${c.type}</span>${mini(c.id)}</div><div class="card-body"><span class="card-category">${c.category}</span><h3>${c.title}</h3><p>${c.desc}</p><div class="card-bottom"><span class="${c.live?'live':''}">${c.live?'● Live experiment':'◌ Concept preview'} &nbsp; · &nbsp; ${c.time}</span><button class="bookmark" data-save="${c.id}" aria-label="${saved.includes(c.id)?'Unsave':'Save'} ${c.title}">${saved.includes(c.id)?'◆':'◇'}</button></div></div></article>`).join('')||'<div class="empty">No experiments here yet. Try another search or save a concept from the library.</div>';$$('.card').forEach(e=>{e.onclick=()=>openLab(e.dataset.id);e.onkeydown=v=>{if(v.key==='Enter')openLab(e.dataset.id)}});$$('[data-save]').forEach(e=>e.onclick=v=>{v.stopPropagation();toggleSave(e.dataset.save);renderCards()})}
-function toggleSave(id){saved=saved.includes(id)?saved.filter(x=>x!==id):[...saved,id];persist()}
-function showView(v){view=v;current=null;$('#lab').hidden=true;$('#paths').hidden=v!=='paths';$('#library').hidden=v==='paths';$('.hero').hidden=v==='saved';$('.featured').hidden=v==='saved';$('#sectionTitle').textContent=v==='saved'?'Your saved experiments.':'A library of aha moments.';$('#sectionSub').textContent=v==='saved'?'Keep the ideas you want to return to.':'Small ideas. Powerful connections. Pick something you’re curious about.';$('#breadcrumb').innerHTML='Workspace <span>/</span> '+(v==='paths'?'Learning paths':v==='saved'?'Saved':'Explore');$$('.nav').forEach(e=>e.classList.toggle('active',e.dataset.view===v));if(v==='paths')renderPaths();else{renderCards();requestAnimationFrame(resize)}window.scrollTo({top:0,behavior:'smooth'})}
-function setFilter(f){filter=f;showView('library');$$('#filters button').forEach(b=>b.classList.toggle('selected',b.dataset.filter===f));$('#sectionTitle').scrollIntoView({behavior:'smooth',block:'center'})}
-$$('.nav').forEach(e=>e.onclick=()=>showView(e.dataset.view));$$('[data-filter]').forEach(e=>e.onclick=()=>setFilter(e.dataset.filter));$('#search').oninput=renderCards;$('.brand').onclick=e=>{e.preventDefault();setFilter('All')};$('#start').onclick=$('#featuredOpen').onclick=()=>openLab('overfit');$('#about').onclick=()=>$('#info').showModal();document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){e.preventDefault();showView('library');$('#search').focus()}});
+
 function renderPaths(){$('#paths').innerHTML='<div class="lab-intro"><div class="eyebrow" style="margin-top:40px">FOLLOW YOUR CURIOSITY</div><h1>A few ideas, connected.</h1><p>Build understanding one experiment at a time. Each path begins with something you can try.</p></div>'+[{n:'01',title:'Why models succeed and fail',desc:'Overfitting → classification tradeoffs · 2 live labs',id:'overfit'},{n:'02',title:'Build your statistical intuition',desc:'Outliers → robust summaries · 1 live lab',id:'outliers'},{n:'03',title:'Inside a modern AI system',desc:'Embeddings → attention → retrieval · concept previews',id:'vectors'}].map(p=>`<div class="path-card"><span class="path-number">${p.n}</span><div><h3>${p.title}</h3><p>${p.desc}</p></div><button class="primary" data-open="${p.id}">Explore ↗</button></div>`).join('');$$('[data-open]').forEach(e=>e.onclick=()=>openLab(e.dataset.open))}
+
 const descriptions={overfit:'Give a model more freedom. Does fitting the training data better always help it predict new observations?',outliers:'Most values stay close together. Move one observation and see which summary moves with it.',threshold:'A model gives you a probability. You choose when it becomes a positive prediction. What does that choice cost?'};
-function openLab(id){current=id;tab='Intuition';$('#library').hidden=true;$('#paths').hidden=true;$('#lab').hidden=false;const c=concepts.find(x=>x.id===id);$('#breadcrumb').innerHTML=`Library <span>/</span> ${c.category} <span>/</span> ${c.type.toLowerCase()}`;$('#lab').innerHTML=`<div class="lab-top"><button class="back" id="back">← Back to the library</button><button class="secondary" id="saveLab">${saved.includes(id)?'◆ Saved':'◇ Save experiment'}</button></div><div class="lab-intro"><div class="eyebrow">${c.category.toUpperCase()} &nbsp; / &nbsp; ${c.type}</div><h1>${c.title}</h1><p>${descriptions[id]||c.desc}</p></div>${c.live?liveHTML(id):previewHTML(id)}<div class="details"><div class="detail-tabs">${['Intuition','The math','In practice','Connections'].map(t=>`<button data-tab="${t}" class="${t===tab?'active':''}">${t}</button>`).join('')}</div><div class="detail-content" id="detailContent"></div></div>`;$('#back').onclick=()=>showView('library');$('#saveLab').onclick=()=>{toggleSave(id);$('#saveLab').textContent=saved.includes(id)?'◆ Saved':'◇ Save experiment'};$$('[data-tab]').forEach(e=>e.onclick=()=>{tab=e.dataset.tab;$$('[data-tab]').forEach(b=>b.classList.toggle('active',b===e));renderDetail()});renderDetail();if(c.live)bindLab(id);window.scrollTo({top:0,behavior:'smooth'})}
-function range(id,label,min,max,val,step,left,right){return `<div class="control"><label class="control-label" for="${id}">${label}<output id="${id}Val">${val}</output></label><input id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${val}"><div class="range-labels"><span>${left}</span><span>${right}</span></div></div>`}
-function liveHTML(id){let controls=id==='overfit'?range('degree','Model complexity',1,12,degree,1,'Linear','Degree 12')+range('noise','Data noise',0,.5,noise,.05,'Clean','Noisy')+range('lambda','Regularization',0,1,lambda,.01,'None','Strong'):id==='outliers'?range('outlier','Outlier value',0,50,outlier,.5,'0','50'):range('threshold','Decision threshold',.05,.95,threshold,.05,'More positives','Fewer positives');return `<div class="steps"><b>01 · Make a prediction</b><span>02 · Change something</span><span>03 · Notice what changes</span></div><div class="lab-grid"><div class="experiment"><div class="experiment-head"><span>${id==='overfit'?'A MODEL LEARNING FROM DATA':id==='outliers'?'NINE OBSERVATIONS, ONE MOVING POINT':'30 SCORED OBSERVATIONS'}</span><div class="legend"><span><i></i>${id==='threshold'?'Actual positive':'Training / values'}</span><span><i class="orange"></i>${id==='threshold'?'Actual negative':id==='outliers'?'Moving point':'Test data'}</span></div></div><canvas id="plot" aria-label="Interactive experiment visualization"></canvas><div class="hint">${id==='overfit'?'Drag a filled training point to change the dataset.':id==='outliers'?'Drag the orange point or use the slider.':'Move the threshold to change which observations are predicted positive.'}</div><div class="metrics"><div class="metric"><small id="metric1Label"></small><strong id="metric1"></strong></div><div class="metric"><small id="metric2Label"></small><strong id="metric2"></strong></div></div></div><div class="controls"><h3>The control panel</h3>${controls}${id==='overfit'?'<button class="secondary" id="newData">↻ Generate new data</button>':''}<button class="secondary" id="reset">Reset experiment</button><p style="font-size:9px;color:#93a086;margin-top:22px">${id==='overfit'?'Before you move a slider: will a more flexible model make test error better or worse?':id==='outliers'?'Before you move the point: which will change more, the mean or median?':'Before lowering the threshold: will you catch more positives? What else changes?'}</p></div></div><div class="insight"><strong>WHAT YOU’RE SEEING</strong><span id="insightText"></span></div>`}
+
 function previewHTML(id){const labels=id==='rag'?['Question','Retrieve evidence','Generate answer']:id==='attention'?['Tokens','Attention weights','Contextual representations']:['Words','Embedding vectors','Similarity'];return `<div class="preview-banner">◌ Concept preview · This module illustrates the planned scope. Its full interactive experiment is not built yet.</div><div class="preview-diagram">${labels.map((l,i)=>`${i?'<span>→</span>':''}<div class="preview-node">${l}</div>`).join('')}</div>`}
 
 function renderDetail(){let fallback={'Intuition':'This planned module connects a local mechanism to the larger AI system. The finished version will let you change an input and inspect intermediate representations.','The math':current==='vectors'?'Cosine similarity is (u · v) / (‖u‖ ‖v‖). A two-dimensional projection can distort distances and should be labeled as a projection.':current==='attention'?'Scaled dot-product attention: softmax(QKᵀ / √dₖ)V. Attention weights describe the computation; they are not a complete explanation of model reasoning.':'Retrieval selects evidence; generation conditions on that evidence and the question. Useful evaluation separates retrieval quality from answer quality.','In practice':'The full experiment will include a realistic application, a failure case, and clearly stated simplifications.','Connections':'Explore a working lab: <button class="text-link" onclick="openLab(\'overfit\')">The overfitting trap ↗</button>'};$('#detailContent').innerHTML=(detail[current]||fallback)[tab]}
-let train=[],test=[];
-function dataset(){({train,test}=generateDataset(seed,noise))}dataset();
-const fit=(d,reg)=>fitPolynomial(train,d,reg);
-
-function context(id){const c=$(id),r=c.getBoundingClientRect(),d=devicePixelRatio||1;c.width=r.width*d;c.height=r.height*d;let g=c.getContext('2d');g.scale(d,d);return{g,w:r.width,h:r.height,c}}
-function grid(g,w,h){g.strokeStyle='#e9ede4';g.lineWidth=1;for(let i=0;i<6;i++){let y=25+(h-60)*i/5;g.beginPath();g.moveTo(32,y);g.lineTo(w-20,y);g.stroke()}g.fillStyle='#a8b09e';g.font='9px sans-serif';g.fillText('−1',24,h-8);g.fillText('0',w/2,h-8);g.fillText('1',w-26,h-8)}
-function plotFit(id,d,reg,teaser=false){let{g,w,h}=context(id);grid(g,w,h);let X=x=>32+(x+1)/2*(w-52),Y=y=>h/2-y*(h-60)/3;let f=fit(d,reg);if(!teaser)test.forEach(p=>{g.strokeStyle='#d8a174';g.beginPath();g.arc(X(p.x),Y(p.y),3,0,7);g.stroke()});g.save();g.beginPath();g.rect(30,10,w-48,h-33);g.clip();g.strokeStyle='#647c59';g.lineWidth=2;g.beginPath();for(let i=0;i<=250;i++){let x=-1+i/125,y=Y(f(x));i?g.lineTo(X(x),y):g.moveTo(X(x),y)}g.stroke();g.restore();train.forEach(p=>{g.fillStyle='#829f83';g.beginPath();g.arc(X(p.x),Y(p.y),teaser?3:4,0,7);g.fill()});return{f,X,Y,w,h}}
-function metric(a,b,va,vb){$('#metric1Label').textContent=a;$('#metric2Label').textContent=b;$('#metric1').textContent=va;$('#metric2').textContent=vb}
-const fixed=[3,4,4.5,5,5.5,6,6.5,7];const scores=Array.from({length:30},(_,i)=>({p:(i+1)/31,positive:((i*17)%31)/31<((i+1)/31)}));
-function drawLab(){if(!current||!$('#plot'))return;if(current==='overfit'){let{f}=plotFit('#plot',degree,lambda);let mse=pts=>pts.reduce((s,p)=>s+(p.y-f(p.x))**2,0)/pts.length,a=mse(train),b=mse(test);metric('TRAINING ERROR · MSE','TEST ERROR · MSE',a.toFixed(4),b.toFixed(4));$('#insightText').textContent=lambda>.15?'Regularization discourages large coefficients, reducing how sharply the curve can bend. Watch how both errors change as you adjust it.':degree<3?'A simple model has limited flexibility. If it misses the curved pattern, both training and test error can remain high.':b>a*1.8?'The model fits the training observations more closely than unseen data. This gap is a sign to investigate overfitting; try regularization or lower complexity.':'The curve is capturing the pattern with a relatively small train–test gap. Explore nearby settings: the best test result varies with the sampled data.'}else if(current==='outliers'){let{g,w,h}=context('#plot'),X=x=>30+x/50*(w-55),y=h*.48;g.strokeStyle='#dfe5d6';g.beginPath();g.moveTo(30,y+20);g.lineTo(w-25,y+20);g.stroke();g.font='9px sans-serif';g.fillStyle='#9ba68f';for(let i=0;i<=50;i+=10)g.fillText(i,X(i)-4,y+40);const values=[...fixed,outlier].sort((a,b)=>a-b),mean=calculateMean(values),median=calculateMedian(values);fixed.forEach((v,i)=>{g.fillStyle='#9cad91';g.beginPath();g.arc(X(v),y-(i%3)*13,5,0,7);g.fill()});g.fillStyle='#d49c63';g.beginPath();g.arc(X(outlier),y,8,0,7);g.fill();[[mean,'#65884e','Mean'],[median,'#8c81ad','Median']].forEach(([v,color,label],i)=>{g.strokeStyle=color;g.setLineDash([4,4]);g.beginPath();g.moveTo(X(v),y-65);g.lineTo(X(v),y+50);g.stroke();g.setLineDash([]);g.fillStyle=color;g.fillText(label,X(v)-12,y-78-i*14)});metric('MEAN','MEDIAN',mean.toFixed(2),median.toFixed(2));$('#insightText').textContent=outlier>15?'The extreme point pulls the mean to the right. The median barely moves because it depends on position in the sorted data, not how far the extreme point travels.':'The observations are relatively close together. Move the orange point far to the right and compare how much each summary changes.'}else{let{g,w,h}=context('#plot'),X=p=>30+p*(w-55),cut=X(threshold);g.fillStyle='#edf3e6';g.fillRect(cut,30,w-25-cut,h-75);g.strokeStyle='#718d5b';g.beginPath();g.moveTo(cut,25);g.lineTo(cut,h-42);g.stroke();g.font='9px sans-serif';g.fillStyle='#819571';g.fillText('PREDICTED POSITIVE',Math.min(cut+8,w-139),19);let {tp,fp,fn}=classificationMetrics(scores,threshold);scores.forEach((s,i)=>{let pred=s.p>=threshold;g.fillStyle=s.positive?'#82a17a':'#d9aa80';g.beginPath();g.arc(X(s.p),65+(i%5)*(h-130)/5,5,0,7);g.fill()});g.fillStyle='#a2ad95';for(let i=0;i<=10;i+=2)g.fillText((i/10).toFixed(1),X(i/10)-6,h-18);metric('PRECISION','RECALL',tp+fp?(100*tp/(tp+fp)).toFixed(0)+'%':'—',(100*tp/(tp+fn)).toFixed(0)+'%');$('#insightText').textContent=`At threshold ${threshold.toFixed(2)}, you catch ${tp} true positives, flag ${fp} false positives, and miss ${fn} positives. ${threshold<.4?'A lower threshold catches more positive cases, at the cost of more false alarms.':threshold>.7?'A higher threshold flags fewer cases, but misses more actual positives.':'Which tradeoff is appropriate depends on the costs of the two types of mistakes.'}`}}
-function bindLab(id){['degree','noise','lambda','threshold','outlier'].forEach(k=>{let e=$('#'+k);if(e)e.oninput=()=>{let v=+e.value;if(k==='degree')degree=v;if(k==='noise'){noise=v;dataset()}if(k==='lambda')lambda=v;if(k==='threshold')threshold=v;if(k==='outlier')outlier=v;$('#'+k+'Val').textContent=v;drawLab()}});$('#reset').onclick=()=>{degree=5;noise=.2;lambda=0;seed=7;threshold=.5;outlier=8;dataset();openLab(id)};if($('#newData'))$('#newData').onclick=()=>{seed++;dataset();drawLab()};let active=-1;$('#plot').onpointerdown=e=>{let r=e.currentTarget.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;if(id==='outliers'){active=0}else if(id==='overfit'){let X=p=>32+(p.x+1)/2*(r.width-52),Y=p=>r.height/2-p.y*(r.height-60)/3;let distances=train.map(p=>Math.hypot(X(p)-x,Y(p)-y));active=distances.indexOf(Math.min(...distances));if(distances[active]>22)active=-1}if(active>=0){e.currentTarget.setPointerCapture(e.pointerId);drag=true}};$('#plot').onpointermove=e=>{if(!drag)return;let r=e.currentTarget.getBoundingClientRect();if(id==='outliers'){outlier=Math.max(0,Math.min(50,(e.clientX-r.left-30)/(r.width-55)*50));$('#outlier').value=outlier;$('#outlierVal').textContent=outlier.toFixed(1)}else if(id==='overfit')train[active].y=Math.max(-1.45,Math.min(1.45,(r.height/2-(e.clientY-r.top))*3/(r.height-60)));drawLab()};$('#plot').onpointerup=$('#plot').onpointercancel=()=>{drag=false;active=-1};requestAnimationFrame(drawLab)}
-$('#teaserRange').oninput=()=>plotFit('#teaser',+$('#teaserRange').value,0,true);function resize(){if(!$('#library').hidden&&!$('.featured').hidden)plotFit('#teaser',+$('#teaserRange').value,0,true);if(current)drawLab()}window.addEventListener('resize',resize);renderCards();requestAnimationFrame(resize);
-
-window.openLab=openLab;
+route();

@@ -29,3 +29,13 @@
 ## Product choices to resolve
 
 Primary audience, English versus bilingual content, contributor workflow, license, and how much progress tracking is useful. Keep the first versions focused on understandable experiments before adding accounts or a tutor.
+
+## v0.2 — Deeper experiments (implemented)
+
+- Sunflower yellow theme with violet/coral chart colors and more readable supporting text
+- Scenario presets, richer numerical explanations, accessible HTML data tables
+- Sample-size controls, true-pattern overlay, error sweep, numeric training-point editor
+- Outlier inclusion comparison and deviation statistics
+- Confusion matrix, accuracy/F1, adjustable mistake costs, sample-specific threshold search
+- Shareable/restorable experiment state, per-lab resets, browser history navigation
+- Review findings and remaining priorities in REVIEW-v0.2.md

@@ -1,12 +1,12 @@
 {
   "name": "ai-intuition-lab",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Build intuition for AI, one experiment at a time.",
   "scripts": {
     "start": "node scripts/serve.js",
-    "check": "node --check src/app.js && node --check src/catalog.js && node --check src/content.js && node --check src/models.js && node --check scripts/serve.js",
+    "check": "node --check src/app.js && node --check src/catalog.js && node --check src/content.js && node --check src/models.js && node --check src/simulations.js && node --check scripts/serve.js",
     "test": "node --test"
   },
   "engines": { "node": ">=20" }
